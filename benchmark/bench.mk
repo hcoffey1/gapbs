@@ -9,7 +9,7 @@
 GRAPH_DIR = benchmark/graphs
 RAW_GRAPH_DIR = benchmark/graphs/raw
 
-GRAPHS = twitter web road kron urand
+GRAPHS = twitter #web road kron urand
 ALL_GRAPHS =\
 	$(addsuffix .sg, $(GRAPHS)) \
 	$(addsuffix .wsg, $(GRAPHS)) \
