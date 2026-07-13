@@ -34,7 +34,7 @@ for i in $(seq 0 7); do
     TIME=$(grep "Time" time-${kernels[$i]}.txt | cut -c 1-6 --complement)
     MAX_RSS=$(grep "Max RSS" time-${kernels[$i]}.txt | cut -c 1-9 --complement)
     echo ${kernels[$i]},$LD_CNT,$ST_CNT,$HLD_CNT,$HST_CNT,$L1_MISS_CNT,$LLC_MISS_CNT,$LLC_MPKI,$INSN_COUNT,$TIME,$MAX_RSS >> ../zray-gapbs-stats.csv
-    chown apoduval:scailmemorywall- *
+    chown hjcoffey *
     #echo ${kernels[$i]},$LD_CNT,$ST_CNT,$TIME,$PP_TIME,$MAX_RSS >> ../zray-gapbs-stats.csv
     #sleep 1
     #../../aos
