@@ -2,6 +2,11 @@
 
 CXX_FLAGS += -std=c++11 -O3 -Wall
 PAR_FLAG = -fopenmp
+# Application-region support shared with the other workloads (pr uses it);
+# dlsym resolves the REGENT registration symbol at run time.
+REGIONS_DIR ?= ../common
+CXX_FLAGS += -I$(REGIONS_DIR)
+LD_LIBS += -ldl
 
 ifneq (,$(findstring icpc,$(CXX)))
 	PAR_FLAG = -openmp
@@ -22,8 +27,8 @@ SUITE = $(KERNELS) converter
 .PHONY: all
 all: $(SUITE)
 
-% : src/%.cc src/*.h
-	$(CXX) $(CXX_FLAGS) $< -o $@
+% : src/%.cc src/*.h $(REGIONS_DIR)/regent_regions/*.h
+	$(CXX) $(CXX_FLAGS) $< -o $@ $(LD_LIBS)
 
 # Testing
 include test/test.mk

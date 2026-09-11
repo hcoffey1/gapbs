@@ -8,6 +8,7 @@
 #include <cinttypes>
 #include <cstddef>
 #include <iostream>
+#include <stdexcept>
 #include <type_traits>
 
 #include "pvector.h"
@@ -117,14 +118,16 @@ class CSRGraph {
   };
 
   void ReleaseResources() {
-    if (out_index_ != nullptr)
+    // Adopted storage belongs to the caller (see AdoptStorage); only the
+    // arrays this graph still owns are heap allocations.
+    if (out_index_ != nullptr && !adopted_.out_index)
       delete[] out_index_;
-    if (out_neighbors_ != nullptr)
+    if (out_neighbors_ != nullptr && !adopted_.out_neighbors)
       delete[] out_neighbors_;
     if (directed_) {
-      if (in_index_ != nullptr)
+      if (in_index_ != nullptr && !adopted_.in_index)
         delete[] in_index_;
-      if (in_neighbors_ != nullptr)
+      if (in_neighbors_ != nullptr && !adopted_.in_neighbors)
         delete[] in_neighbors_;
     }
   }
@@ -153,7 +156,9 @@ class CSRGraph {
   CSRGraph(CSRGraph&& other) : directed_(other.directed_),
     num_nodes_(other.num_nodes_), num_edges_(other.num_edges_),
     out_index_(other.out_index_), out_neighbors_(other.out_neighbors_),
-    in_index_(other.in_index_), in_neighbors_(other.in_neighbors_) {
+    in_index_(other.in_index_), in_neighbors_(other.in_neighbors_),
+    adopted_(other.adopted_) {
+      other.adopted_ = Adopted();
       other.num_edges_ = -1;
       other.num_nodes_ = -1;
       other.out_index_ = nullptr;
@@ -176,6 +181,8 @@ class CSRGraph {
       out_neighbors_ = other.out_neighbors_;
       in_index_ = other.in_index_;
       in_neighbors_ = other.in_neighbors_;
+      adopted_ = other.adopted_;
+      other.adopted_ = Adopted();
       other.num_edges_ = -1;
       other.num_nodes_ = -1;
       other.out_index_ = nullptr;
@@ -262,7 +269,63 @@ class CSRGraph {
     return Range<NodeID_>(num_nodes());
   }
 
+  // Extents of the final CSR arrays, for callers relocating them.
+  int64_t in_neighbors_count() const {
+    return in_index_[num_nodes_] - in_index_[0];
+  }
+  const DestID_* in_neighbors_data() const { return in_index_[0]; }
+  DestID_* const* out_index_data() const { return out_index_; }
+  DestID_* const* in_index_data() const { return in_index_; }
+
+  // Opt-in relocation for application-region experiments: the caller has
+  // copied the incoming neighbors into in_neighs and supplies index storage
+  // of num_nodes()+1 entries each. Incoming index pointers are rebuilt
+  // against the new base; outgoing index pointers are copied as they are,
+  // so outgoing neighbors stay wherever they were. The replaced heap arrays
+  // are released here. Adopted storage is never freed by this graph: the
+  // caller keeps it alive for the graph's lifetime (registered mappings live
+  // until process exit). An undirected graph aliases both structures, so it
+  // takes one index and one neighbor array and out_index must be nullptr.
+  void AdoptStorage(DestID_** out_index, DestID_** in_index,
+                    DestID_* in_neighs) {
+    if (directed_ == (out_index == nullptr))
+      throw std::logic_error("AdoptStorage: index arguments do not match "
+                             "graph directedness");
+    const DestID_* old_in_base = in_index_[0];
+    #pragma omp parallel for
+    for (NodeID_ n = 0; n < num_nodes_ + 1; n++) {
+      in_index[n] = in_neighs + (in_index_[n] - old_in_base);
+      if (out_index != nullptr)
+        out_index[n] = out_index_[n];
+    }
+    if (directed_) {
+      if (!adopted_.out_index)
+        delete[] out_index_;
+      if (!adopted_.in_index)
+        delete[] in_index_;
+      if (!adopted_.in_neighbors)
+        delete[] in_neighbors_;
+      out_index_ = out_index;
+      in_index_ = in_index;
+      in_neighbors_ = in_neighs;
+      adopted_.out_index = adopted_.in_index = adopted_.in_neighbors = true;
+    } else {
+      if (!adopted_.out_index)
+        delete[] out_index_;
+      if (!adopted_.out_neighbors)
+        delete[] out_neighbors_;
+      out_index_ = in_index_ = in_index;
+      out_neighbors_ = in_neighbors_ = in_neighs;
+      adopted_.out_index = adopted_.in_index = true;
+      adopted_.out_neighbors = adopted_.in_neighbors = true;
+    }
+  }
+
  private:
+  struct Adopted {
+    bool out_index = false, out_neighbors = false;
+    bool in_index = false, in_neighbors = false;
+  };
   bool directed_;
   int64_t num_nodes_;
   int64_t num_edges_;
@@ -270,6 +333,7 @@ class CSRGraph {
   DestID_*  out_neighbors_;
   DestID_** in_index_;
   DestID_*  in_neighbors_;
+  Adopted adopted_;
 };
 
 #endif  // GRAPH_H_
