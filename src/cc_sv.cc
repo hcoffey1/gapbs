@@ -14,6 +14,57 @@
 #include "graph.h"
 #include "pvector.h"
 
+#ifdef ZRAY_STUDY
+#include "zray.h"
+extern "C" void zray_study_finalize();
+#else
+#define ZRAY_BEGIN(group_id) ((void)0)
+#define ZRAY_END(group_id) ((void)0)
+#endif
+
+// ZRay regions of interest. One nesting level is instrumented per build,
+// selected with -DZRAY_ROI=<level>; markers stay in the serial code and every
+// OpenMP team thread reports its share of the enclosed parallel loops.
+//   ZRAY_ROI_LOOPS  group 1 = hooking loop, group 2 = compression loop
+//   ZRAY_ROI_FUNC   group 3 = one ShiloachVishkin call
+//   ZRAY_ROI_APP    group 4 = the application from graph load to exit
+#define ZRAY_ROI_LOOPS 1
+#define ZRAY_ROI_FUNC 2
+#define ZRAY_ROI_APP 3
+#ifndef ZRAY_ROI
+#define ZRAY_ROI ZRAY_ROI_LOOPS
+#endif
+#if ZRAY_ROI == ZRAY_ROI_LOOPS
+#define ROI_HOOK(marker) marker(1)
+#define ROI_COMPRESS(marker) marker(2)
+#else
+#define ROI_HOOK(marker) ((void)0)
+#define ROI_COMPRESS(marker) ((void)0)
+#endif
+#if ZRAY_ROI == ZRAY_ROI_FUNC
+#define ROI_FUNC(marker) marker(3)
+#else
+#define ROI_FUNC(marker) ((void)0)
+#endif
+#if ZRAY_ROI == ZRAY_ROI_APP
+#define ROI_APP(marker) marker(4)
+#else
+#define ROI_APP(marker) ((void)0)
+#endif
+
+// The hooking loop's work per vertex is its out-degree, so the schedule matters
+// on skewed graphs. CC_SV_DYNAMIC selects dynamic chunks of CC_SV_CHUNK
+// vertices (default 16384); otherwise the loop keeps the static default.
+#ifndef CC_SV_CHUNK
+#define CC_SV_CHUNK 16384
+#endif
+#define CC_SV_PRAGMA(x) _Pragma(#x)
+#ifdef CC_SV_DYNAMIC
+#define CC_SV_HOOK_LOOP CC_SV_PRAGMA(omp parallel for schedule(dynamic, CC_SV_CHUNK))
+#else
+#define CC_SV_HOOK_LOOP _Pragma("omp parallel for")
+#endif
+
 
 /*
 GAP Benchmark Suite
@@ -47,6 +98,7 @@ using namespace std;
 // direction, so we use a min-max swap such that lower component IDs propagate
 // independent of the edge's direction.
 pvector<NodeID> ShiloachVishkin(const Graph &g) {
+  ROI_FUNC(ZRAY_BEGIN);
   pvector<NodeID> comp(g.num_nodes());
   #pragma omp parallel for
   for (NodeID n=0; n < g.num_nodes(); n++)
@@ -56,7 +108,8 @@ pvector<NodeID> ShiloachVishkin(const Graph &g) {
   while (change) {
     change = false;
     num_iter++;
-    #pragma omp parallel for
+    ROI_HOOK(ZRAY_BEGIN);
+    CC_SV_HOOK_LOOP
     for (NodeID u=0; u < g.num_nodes(); u++) {
       for (NodeID v : g.out_neigh(u)) {
         NodeID comp_u = comp[u];
@@ -71,14 +124,18 @@ pvector<NodeID> ShiloachVishkin(const Graph &g) {
         }
       }
     }
+    ROI_HOOK(ZRAY_END);
+    ROI_COMPRESS(ZRAY_BEGIN);
     #pragma omp parallel for
     for (NodeID n=0; n < g.num_nodes(); n++) {
       while (comp[n] != comp[comp[n]]) {
         comp[n] = comp[comp[n]];
       }
     }
+    ROI_COMPRESS(ZRAY_END);
   }
   cout << "Shiloach-Vishkin took " << num_iter << " iterations" << endl;
+  ROI_FUNC(ZRAY_END);
   return comp;
 }
 
@@ -153,8 +210,21 @@ int main(int argc, char* argv[]) {
   CLApp cli(argc, argv, "connected-components");
   if (!cli.ParseArgs())
     return -1;
+  ROI_APP(ZRAY_BEGIN);
   Builder b(cli);
   Graph g = b.MakeGraph();
-  BenchmarkKernel(cli, g, ShiloachVishkin, PrintCompStats, CCVerifier);
+  // Lambdas rather than function pointers: BenchmarkKernel then calls the
+  // kernel directly, which a ZRay region in main can follow into a clone.
+  BenchmarkKernel(cli, g,
+                  [](const Graph &g) { return ShiloachVishkin(g); },
+                  [](const Graph &g, const pvector<NodeID> &comp) {
+                    PrintCompStats(g, comp); },
+                  [](const Graph &g, const pvector<NodeID> &comp) {
+                    return CCVerifier(g, comp); });
+  ROI_APP(ZRAY_END);
+#ifdef ZRAY_STUDY
+  // Flush the persistent OpenMP workers after all timed trials finish.
+  zray_study_finalize();
+#endif
   return 0;
 }

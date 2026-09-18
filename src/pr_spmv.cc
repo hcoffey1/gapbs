@@ -11,6 +11,14 @@
 #include "graph.h"
 #include "pvector.h"
 
+#ifdef ZRAY_STUDY
+#include "zray.h"
+extern "C" void zray_study_finalize();
+#else
+#define ZRAY_BEGIN(group_id) ((void)0)
+#define ZRAY_END(group_id) ((void)0)
+#endif
+
 
 /*
 GAP Benchmark Suite
@@ -40,17 +48,29 @@ pvector<ScoreT> PageRankPull(const Graph &g, int max_iters, double epsilon = 0,
   pvector<ScoreT> outgoing_contrib(g.num_nodes());
   for (int iter=0; iter < max_iters; iter++) {
     double error = 0;
-    #pragma omp parallel for
-    for (NodeID n=0; n < g.num_nodes(); n++)
-      outgoing_contrib[n] = scores[n] / g.out_degree(n);
-    #pragma omp parallel for reduction(+ : error) schedule(dynamic, 16384)
-    for (NodeID u=0; u < g.num_nodes(); u++) {
-      ScoreT incoming_total = 0;
-      for (NodeID v : g.in_neigh(u))
-        incoming_total += outgoing_contrib[v];
-      ScoreT old_score = scores[u];
-      scores[u] = base_score + kDamp * incoming_total;
-      error += fabs(scores[u] - old_score);
+    #pragma omp parallel
+    {
+      // Group 1: each worker's contribution generation, excluding the barrier.
+      ZRAY_BEGIN(1);
+      #pragma omp for nowait
+      for (NodeID n=0; n < g.num_nodes(); n++)
+        outgoing_contrib[n] = scores[n] / g.out_degree(n);
+      ZRAY_END(1);
+    }
+    #pragma omp parallel reduction(+ : error)
+    {
+      // Group 2: each worker's sparse update, including dynamic scheduling.
+      ZRAY_BEGIN(2);
+      #pragma omp for nowait schedule(dynamic, 16384)
+      for (NodeID u=0; u < g.num_nodes(); u++) {
+        ScoreT incoming_total = 0;
+        for (NodeID v : g.in_neigh(u))
+          incoming_total += outgoing_contrib[v];
+        ScoreT old_score = scores[u];
+        scores[u] = base_score + kDamp * incoming_total;
+        error += fabs(scores[u] - old_score);
+      }
+      ZRAY_END(2);
     }
     if (logging_enabled)
       PrintStep(iter, error);
@@ -107,5 +127,9 @@ int main(int argc, char* argv[]) {
     return PRVerifier(g, scores, cli.tolerance());
   };
   BenchmarkKernel(cli, g, PRBound, PrintTopScores, VerifierBound);
+#ifdef ZRAY_STUDY
+  // Flush the persistent OpenMP workers after all timed trials finish.
+  zray_study_finalize();
+#endif
   return 0;
 }
