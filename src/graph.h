@@ -241,7 +241,7 @@ class CSRGraph {
 
   static DestID_** GenIndex(const pvector<SGOffset> &offsets, DestID_* neighs) {
     NodeID_ length = offsets.size();
-    DestID_** index = new DestID_*[length];
+    DestID_** index = ca_new<DestID_*>(length);
     #pragma omp parallel for
     for (NodeID_ n=0; n < length; n++)
       index[n] = neighs + offsets[n];

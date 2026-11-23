@@ -37,6 +37,8 @@ pvector<ScoreT> PageRankPullGS(const Graph &g, int max_iters, double epsilon=0,
   const ScoreT base_score = (1.0f - kDamp) / g.num_nodes();
   pvector<ScoreT> scores(g.num_nodes(), init_score);
   pvector<ScoreT> outgoing_contrib(g.num_nodes());
+  ca_log("scores", scores.data(), g.num_nodes() * sizeof(ScoreT));
+  ca_log("outgoing_contrib", outgoing_contrib.data(), g.num_nodes() * sizeof(ScoreT));
   #pragma omp parallel for
   for (NodeID n=0; n < g.num_nodes(); n++)
     outgoing_contrib[n] = init_score / g.out_degree(n);
@@ -98,8 +100,34 @@ int main(int argc, char* argv[]) {
   CLPageRank cli(argc, argv, "pagerank", 1e-4, 20);
   if (!cli.ParseArgs())
     return -1;
+#ifdef CUSTOM_ALLOC
+  // Arenas split by access pattern: rand = per-vertex scores/contrib (random
+  // reads), stream = in-graph + indexes (streamed), cold = out_neighbors
+  // (unused by the kernel). CA_NODES="rand,stream,cold" picks each arena's
+  // NUMA node (default 0,0,0).
+  int nr = 0, ns = 0, nc = 0;
+  const char *nodes = getenv("CA_NODES");
+  if (nodes && *nodes && (sscanf(nodes, "%d,%d,%d", &nr, &ns, &nc) != 3 ||
+                nr < 0 || ns < 0 || nc < 0)) {
+    fprintf(stderr, "CA_NODES must be \"rand,stream,cold\" node ids, got '%s'\n", nodes);
+    return -1;
+  }
+  fprintf(stderr, "[ca] layout rand=%d stream=%d cold=%d\n", nr, ns, nc);
+  int rand_arena = ca_arena_create(nr, MPOL_PREFERRED);
+  int stream_arena = ca_arena_create(ns, MPOL_PREFERRED);
+  int cold_arena = ca_arena_create(nc, MPOL_PREFERRED);
+  if (rand_arena < 0 || stream_arena < 0 || cold_arena < 0) {
+    perror("ca_arena_create");
+    return -1;
+  }
+  ca_in_neigh = ca_index = stream_arena;
+  ca_out_neigh = cold_arena;
+#endif
   Builder b(cli);
   Graph g = b.MakeGraph();
+#ifdef CUSTOM_ALLOC
+  ca_cur = rand_arena;  // per-trial scores / outgoing_contrib
+#endif
   auto PRBound = [&cli] (const Graph &g) {
     return PageRankPullGS(g, cli.max_iters(), cli.tolerance(), cli.logging_en());
   };

@@ -6,6 +6,8 @@
 
 #include <algorithm>
 
+#include "ca_hooks.h"
+
 
 /*
 GAP Benchmark Suite
@@ -27,7 +29,7 @@ class pvector {
   pvector() : start_(nullptr), end_size_(nullptr), end_capacity_(nullptr) {}
 
   explicit pvector(size_t num_elements) {
-    start_ = new T_[num_elements];
+    start_ = ca_new<T_>(num_elements);
     end_size_ = start_ + num_elements;
     end_capacity_ = end_size_;
   }
@@ -82,7 +84,7 @@ class pvector {
   // not thread-safe
   void reserve(size_t num_elements) {
     if (num_elements > capacity()) {
-      T_ *new_range = new T_[num_elements];
+      T_ *new_range = ca_new<T_>(num_elements);
       #pragma omp parallel for
       for (size_t i=0; i < size(); i++)
         new_range[i] = start_[i];

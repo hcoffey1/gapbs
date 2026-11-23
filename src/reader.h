@@ -283,19 +283,42 @@ class Reader {
     file.read(reinterpret_cast<char*>(&directed), sizeof(bool));
     file.read(reinterpret_cast<char*>(&num_edges), sizeof(SGOffset));
     file.read(reinterpret_cast<char*>(&num_nodes), sizeof(SGOffset));
+#ifdef CUSTOM_ALLOC
+    int saved_cur = ca_cur;
+    ca_cur = -1;  // offsets is a temporary: default allocator
+#endif
     pvector<SGOffset> offsets(num_nodes+1);
-    neighs = new DestID_[num_edges];
+    neighs = ca_new<DestID_>(num_edges, ca_out_neigh);
     std::streamsize num_index_bytes = (num_nodes+1) * sizeof(SGOffset);
     std::streamsize num_neigh_bytes = num_edges * sizeof(DestID_);
     file.read(reinterpret_cast<char*>(offsets.data()), num_index_bytes);
     file.read(reinterpret_cast<char*>(neighs), num_neigh_bytes);
+#ifdef CUSTOM_ALLOC
+    ca_cur = ca_index;
+#endif
     index = CSRGraph<NodeID_, DestID_>::GenIndex(offsets, neighs);
+#ifdef CUSTOM_ALLOC
+    ca_cur = -1;
+#endif
+    ca_log("out_neighbors", neighs, num_neigh_bytes);
+    ca_log("out_index", index, (num_nodes+1) * sizeof(DestID_*));
     if (directed && invert) {
-      inv_neighs = new DestID_[num_edges];
+      inv_neighs = ca_new<DestID_>(num_edges, ca_in_neigh);
       file.read(reinterpret_cast<char*>(offsets.data()), num_index_bytes);
       file.read(reinterpret_cast<char*>(inv_neighs), num_neigh_bytes);
+#ifdef CUSTOM_ALLOC
+      ca_cur = ca_index;
+#endif
       inv_index = CSRGraph<NodeID_, DestID_>::GenIndex(offsets, inv_neighs);
+#ifdef CUSTOM_ALLOC
+      ca_cur = -1;
+#endif
+      ca_log("in_neighbors", inv_neighs, num_neigh_bytes);
+      ca_log("in_index", inv_index, (num_nodes+1) * sizeof(DestID_*));
     }
+#ifdef CUSTOM_ALLOC
+    ca_cur = saved_cur;
+#endif
     file.close();
     t.Stop();
     PrintTime("Read Time", t.Seconds());
